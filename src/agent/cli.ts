@@ -45,7 +45,12 @@ Environment:
   LLM_PROVIDER=anthropic|openai     Optional when only one API key is set.
   LLM_MODEL                         Overrides the provider default.
   ANTHROPIC_API_KEY or OPENAI_API_KEY
-  GITHUB_TOKEN and GITHUB_REPOS     Forwarded to the MCP server. Model keys are not.
+  GITHUB_REPOS                      Forwarded to the MCP server.
+  GITHUB_TOKEN                      Forwarded. Used when no GitHub App variable is set.
+  GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID,
+  GITHUB_APP_PRIVATE_KEY or GITHUB_APP_PRIVATE_KEY_PATH
+                                    Forwarded. A complete App wins over GITHUB_TOKEN.
+  Model keys are not forwarded.
 
 Write tools require confirmation. A non-interactive shell denies them unless you pass --yes.
 `;

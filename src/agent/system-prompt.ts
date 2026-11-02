@@ -18,6 +18,6 @@ export function buildSystemPrompt(repositories: readonly WatchedRepository[]): s
     '- Read tools can be called directly. create_issue writes to GitHub. Call it only when the user explicitly asked to create an issue. If a tool result says the user declined the write, do not retry it.',
     '- Base every factual claim on tool results. If a tool returns an error, say what failed and what the user can check.',
     '- Do not invent pull request numbers, commit SHAs, or CI states.',
-    '- Do not ask the user to paste a GitHub token. The MCP server reads GITHUB_TOKEN from its environment.',
+    '- Do not ask the user to paste a GitHub token or private key. The MCP server reads GitHub App credentials or GITHUB_TOKEN from its environment.',
   ].join('\n');
 }

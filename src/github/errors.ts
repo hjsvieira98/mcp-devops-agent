@@ -2,7 +2,15 @@ export class MissingGitHubTokenError extends Error {
   override readonly name = 'MissingGitHubTokenError';
 
   constructor() {
-    super('GITHUB_TOKEN is not set.');
+    super('No GitHub credential is set.');
+  }
+}
+
+export class GitHubAppAuthError extends Error {
+  override readonly name = 'GitHubAppAuthError';
+
+  constructor(message: string) {
+    super(message);
   }
 }
 
@@ -32,7 +40,7 @@ export class GitHubApiError extends Error {
 
   toUserMessage(): string {
     if (this.status === 401) {
-      return 'GitHub rejected the token (HTTP 401). Set GITHUB_TOKEN on the MCP server process to a personal access token that can read the repository. Do not paste the token into the chat.';
+      return 'GitHub rejected the credential (HTTP 401). On the MCP server process, set GITHUB_TOKEN or a complete GitHub App (GITHUB_APP_ID, a private key, and GITHUB_APP_INSTALLATION_ID). Do not paste a token or private key into the chat.';
     }
     if (this.rateLimited) {
       const when = this.rateLimitReset ? ` Retry after ${this.rateLimitReset}.` : '';
@@ -42,7 +50,7 @@ export class GitHubApiError extends Error {
       return `GitHub refused access to ${this.path} (HTTP 403): ${this.responseMessage}`;
     }
     if (this.status === 404) {
-      return `GitHub could not find ${this.path}. Check the owner, repository, and number, and that the token can see the repository.`;
+      return `GitHub could not find ${this.path}. Check the owner, repository, and number, and that the credential can see the repository.`;
     }
     if (this.status === 422) {
       return `GitHub rejected the request to ${this.path} (HTTP 422): ${this.responseMessage}`;
@@ -53,13 +61,26 @@ export class GitHubApiError extends Error {
 
 export function scrubSecret(text: string, secret: string | null): string {
   if (!secret) return text;
-  return text.split(secret).join('[redacted]');
+  return scrubSecrets(text, [secret]);
+}
+
+export function scrubSecrets(
+  text: string,
+  secrets: readonly (string | null | undefined)[],
+): string {
+  const unique = [...new Set(secrets.filter((secret): secret is string => Boolean(secret)))].sort(
+    (left, right) => right.length - left.length,
+  );
+  let out = text;
+  for (const secret of unique) out = out.split(secret).join('[redacted]');
+  return out;
 }
 
 export function toToolErrorMessage(error: unknown): string {
   if (error instanceof MissingGitHubTokenError) {
-    return 'GITHUB_TOKEN is not set on the MCP server. Add it to the server environment and restart the server. Do not paste the token into the chat.';
+    return 'No GitHub credential is set on the MCP server. Set GITHUB_TOKEN, or GITHUB_APP_ID with a private key and GITHUB_APP_INSTALLATION_ID, then restart the server. Do not paste a token or private key into the chat.';
   }
+  if (error instanceof GitHubAppAuthError) return error.message;
   if (error instanceof GitHubApiError) return error.toUserMessage();
   if (error instanceof GitHubResponseError) return error.message;
   if (error instanceof Error) return `GitHub request failed: ${error.message}`;

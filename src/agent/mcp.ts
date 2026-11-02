@@ -2,7 +2,7 @@ import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
 import { WATCHLIST_URI } from '../constants.js';
-import type { WatchedRepository } from '../config.js';
+import { GITHUB_SERVER_ENV_KEYS, type WatchedRepository } from '../config.js';
 import { readVersion } from '../version.js';
 import type { AgentTool, ToolCall } from './types.js';
 import type { ToolExecution } from './loop.js';
@@ -99,7 +99,7 @@ export function serverEnvironment(env: NodeJS.ProcessEnv): Record<string, string
     const value = env[key];
     if (value !== undefined) out[key] = value;
   }
-  for (const key of ['GITHUB_TOKEN', 'GITHUB_REPOS', 'GITHUB_API_BASE_URL']) {
+  for (const key of GITHUB_SERVER_ENV_KEYS) {
     const value = env[key];
     if (value !== undefined) out[key] = value;
   }
