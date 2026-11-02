@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { GitHubApiError, GitHubResponseError, scrubSecret } from './errors.js';
+import { GitHubApiError, GitHubAppAuthError, GitHubResponseError, scrubSecret } from './errors.js';
 import type {
   CheckRun,
   CombinedCommitStatus,
@@ -101,20 +101,28 @@ const repoSchema = z.object({
 });
 
 export type GitHubRestClientOptions = {
-  token: string;
+  token?: string;
+  getToken?: () => Promise<string>;
+  scrub?: (text: string) => string;
   baseUrl?: string;
   fetch?: typeof fetch;
   userAgent?: string;
 };
 
 export class GitHubRestClient implements GitHubClient {
-  private readonly token: string;
+  private readonly getToken: () => Promise<string>;
+  private readonly scrub: (text: string) => string;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly userAgent: string;
 
   constructor(options: GitHubRestClientOptions) {
-    this.token = options.token;
+    const staticToken = options.token ?? '';
+    if (!options.getToken && staticToken.length === 0) {
+      throw new Error('GitHubRestClient requires a token.');
+    }
+    this.getToken = options.getToken ?? (async () => staticToken);
+    this.scrub = options.scrub ?? ((text) => text);
     this.baseUrl = (options.baseUrl ?? 'https://api.github.com').replace(/\/+$/, '');
     this.fetchImpl = options.fetch ?? fetch;
     this.userAgent = options.userAgent ?? 'devops-mcp';
@@ -294,13 +302,15 @@ export class GitHubRestClient implements GitHubClient {
       if (value !== undefined) url.searchParams.set(key, String(value));
     }
 
+    const token = await this.bearer();
+
     let response: Response;
     try {
       response = await this.fetchImpl(url, {
         method: init.method ?? 'GET',
         headers: {
           Accept: 'application/vnd.github+json',
-          Authorization: `Bearer ${this.token}`,
+          Authorization: `Bearer ${token}`,
           'User-Agent': this.userAgent,
           'X-GitHub-Api-Version': '2022-11-28',
           ...(init.body === undefined ? {} : { 'Content-Type': 'application/json' }),
@@ -308,8 +318,9 @@ export class GitHubRestClient implements GitHubClient {
         ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       });
     } catch (error) {
+      if (error instanceof GitHubAppAuthError) throw error;
       const message = error instanceof Error ? error.message : 'network request failed';
-      throw new GitHubApiError(0, path, scrubSecret(message, this.token), null, false);
+      throw new GitHubApiError(0, path, this.redact(message, token), null, false);
     }
 
     const raw = await response.text();
@@ -332,7 +343,7 @@ export class GitHubRestClient implements GitHubClient {
     }
 
     if (!response.ok) {
-      const message = scrubSecret(truncate(githubMessage(payload), 400), this.token);
+      const message = this.redact(truncate(githubMessage(payload), 400), token);
       const rateLimited = response.status === 429 || (response.status === 403 && remaining === '0');
       throw new GitHubApiError(response.status, path, message, rateLimitReset, rateLimited);
     }
@@ -343,9 +354,26 @@ export class GitHubRestClient implements GitHubClient {
         .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
         .slice(0, 5)
         .join('; ');
-      throw new GitHubResponseError(path, detail);
+      throw new GitHubResponseError(path, this.redact(detail, token));
     }
     return parsed.data;
+  }
+
+  private async bearer(): Promise<string> {
+    try {
+      return await this.getToken();
+    } catch (error) {
+      if (error instanceof GitHubAppAuthError) {
+        throw new GitHubAppAuthError(this.redact(error.message));
+      }
+      const message =
+        error instanceof Error ? error.message : 'could not obtain a GitHub credential';
+      throw new GitHubAppAuthError(this.redact(message));
+    }
+  }
+
+  private redact(text: string, token?: string): string {
+    return scrubSecret(this.scrub(text), token ?? null);
   }
 }
 

@@ -135,16 +135,26 @@ describe('runAgent', () => {
 
 describe('serverEnvironment', () => {
   it('forwards GitHub settings and drops model credentials', () => {
+    const privateKey =
+      '-----BEGIN RSA PRIVATE KEY-----\nNOT_A_REAL_KEY\n-----END RSA PRIVATE KEY-----';
     const env = serverEnvironment({
       PATH: '/usr/bin',
       GITHUB_TOKEN: 'ghp_test',
       GITHUB_REPOS: 'acme/web',
+      GITHUB_APP_ID: '123',
+      GITHUB_APP_INSTALLATION_ID: '456',
+      GITHUB_APP_PRIVATE_KEY: privateKey,
+      GITHUB_APP_PRIVATE_KEY_PATH: '/keys/app.pem',
       ANTHROPIC_API_KEY: 'sk-ant-secret',
       OPENAI_API_KEY: 'sk-openai-secret',
       LLM_MODEL: 'claude-sonnet-5-5',
     });
     expect(env.GITHUB_TOKEN).toBe('ghp_test');
     expect(env.GITHUB_REPOS).toBe('acme/web');
+    expect(env.GITHUB_APP_ID).toBe('123');
+    expect(env.GITHUB_APP_INSTALLATION_ID).toBe('456');
+    expect(env.GITHUB_APP_PRIVATE_KEY).toBe(privateKey);
+    expect(env.GITHUB_APP_PRIVATE_KEY_PATH).toBe('/keys/app.pem');
     expect(env.PATH).toBe('/usr/bin');
     expect(env).not.toHaveProperty('ANTHROPIC_API_KEY');
     expect(env).not.toHaveProperty('OPENAI_API_KEY');
@@ -157,5 +167,7 @@ describe('buildSystemPrompt', () => {
     const prompt = buildSystemPrompt([{ owner: 'acme', repo: 'web' }]);
     expect(prompt).toContain('acme/web');
     expect(prompt).toContain('create_issue');
+    expect(prompt).toContain('private key');
+    expect(prompt).not.toContain('ghp_');
   });
 });

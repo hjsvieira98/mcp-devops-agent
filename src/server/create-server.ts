@@ -50,7 +50,7 @@ const INSTRUCTIONS = [
   'Pass owner and repo as separate arguments, not as a URL.',
   'devops://watchlist lists repositories from the GITHUB_REPOS environment variable.',
   'Pull request digests truncate patches. Mention that when patchTruncated or filesTruncated is true.',
-  'Never ask the user to paste a GitHub token into the chat. The server reads GITHUB_TOKEN from its own environment.',
+  'Never ask the user to paste a GitHub token or private key into the chat. The server reads GitHub App credentials or GITHUB_TOKEN from its own environment.',
 ].join(' ');
 
 export function createDevOpsServer(options: DevOpsServerOptions): McpServer {
@@ -102,7 +102,7 @@ export function createDevOpsServer(options: DevOpsServerOptions): McpServer {
         });
         const warnings = checksDenied
           ? [
-              'GitHub denied check-run access. Combined commit statuses are included; check runs are not. The token needs permission to read checks.',
+              'GitHub denied check-run access. Combined commit statuses are included; check runs are not. The credential needs permission to read checks.',
             ]
           : [];
         const structured: PullListOutput = { owner, repo, pullRequests: detailed, warnings };

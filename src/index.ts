@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 
-import { loadConfig } from './config.js';
+import { loadConfig, resolveGitHubAuth } from './config.js';
 import { SERVER_NAME } from './constants.js';
 import { startHttpServer } from './http.js';
 import { createRuntimeServer } from './runtime.js';
@@ -16,10 +16,15 @@ Default transport is stdio, which Claude Desktop and Cursor launch as a child pr
 --http serves Streamable HTTP on 127.0.0.1:$MCP_HTTP_PORT (default 3333) at /mcp.
 
 Environment:
-  GITHUB_TOKEN          Personal access token. Required for GitHub calls.
-  GITHUB_REPOS          Comma-separated owner/repo watchlist.
-  GITHUB_API_BASE_URL   Optional API origin. Defaults to https://api.github.com.
-  MCP_HTTP_PORT         Port for --http.
+  GITHUB_APP_ID
+  GITHUB_APP_INSTALLATION_ID
+  GITHUB_APP_PRIVATE_KEY or GITHUB_APP_PRIVATE_KEY_PATH
+                       GitHub App installation. Used when this set is complete.
+                       A partial App configuration is a startup error.
+  GITHUB_TOKEN         Personal access token. Used when no App variable is set.
+  GITHUB_REPOS         Comma-separated owner/repo watchlist.
+  GITHUB_API_BASE_URL  Optional API origin. Defaults to https://api.github.com.
+  MCP_HTTP_PORT        Port for --http.
 `;
 
 async function main(): Promise<void> {
@@ -35,9 +40,9 @@ async function main(): Promise<void> {
   }
 
   const config = loadConfig(process.env);
-  if (!config.githubToken) {
+  if (resolveGitHubAuth(config) === 'none') {
     console.error(
-      `${SERVER_NAME}: GITHUB_TOKEN is not set. The server will start, and GitHub tools will return an error until you set it.`,
+      `${SERVER_NAME}: no GitHub credential is set. The server will start, and GitHub tools will return an error until you set GITHUB_TOKEN or GitHub App credentials.`,
     );
   }
 

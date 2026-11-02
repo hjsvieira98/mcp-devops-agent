@@ -127,6 +127,28 @@ describe('GitHubRestClient', () => {
     expect(issue.labels).toEqual(['bug']);
   });
 
+  it('uses a token provider and scrubs that token from errors', async () => {
+    const dynamic = 'ghs_dynamic_installation_token';
+    const echoedKey = 'pem-line-secret-material';
+    const github = new GitHubRestClient({
+      getToken: async () => dynamic,
+      scrub: (text) => text.split(echoedKey).join('[redacted]'),
+      baseUrl: 'https://api.github.test',
+      fetch: async () => jsonResponse({ message: `no ${dynamic} ${echoedKey}` }, 403),
+    });
+    try {
+      await github.getRepository('acme', 'web');
+      expect.fail('expected an API error');
+    } catch (error) {
+      const message = error instanceof Error ? `${error.message} ${error.stack ?? ''}` : '';
+      expect(message).not.toContain(dynamic);
+      expect(message).not.toContain(echoedKey);
+      expect(message).toContain('[redacted]');
+      expect(error).toBeInstanceOf(GitHubApiError);
+      if (error instanceof GitHubApiError) expect(error.toUserMessage()).not.toContain(dynamic);
+    }
+  });
+
   it('drops pull requests from the issues list', async () => {
     const github = client(async () =>
       jsonResponse([

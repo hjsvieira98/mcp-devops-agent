@@ -122,6 +122,11 @@ describe('MCP server', () => {
       if (text && 'text' in text) expect(text.text).toContain('checkout');
 
       expect(client.getInstructions()).toContain('create_issue');
+      expect(client.getInstructions()).toContain('private key');
+      const listed = JSON.stringify(tools.tools).toLowerCase();
+      for (const secretField of ['github_token', 'private_key', 'private key', 'installation_id']) {
+        expect(listed).not.toContain(secretField);
+      }
     });
   });
 
@@ -211,6 +216,8 @@ describe('MCP server', () => {
       const text = result.content.find((block) => block.type === 'text');
       const message = text && 'text' in text ? text.text : '';
       expect(message).toContain('GITHUB_TOKEN');
+      expect(message).toContain('private key');
+      expect(message).toContain('Do not paste');
       expect(message).not.toContain('ghp_');
     });
   });
