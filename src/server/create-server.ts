@@ -8,10 +8,24 @@ import {
 import { z } from 'zod';
 
 import type { WatchedRepository } from '../config.js';
-import { repoResourceUri, SERVER_NAME, WATCHLIST_URI } from '../constants.js';
+import {
+  DEFAULT_PAGE_SIZE,
+  MAX_LIST_RESULTS,
+  MAX_PAGE_SIZE,
+  repoResourceUri,
+  SERVER_NAME,
+  WATCHLIST_URI,
+} from '../constants.js';
 import { GitHubApiError, toToolErrorMessage } from '../github/errors.js';
-import type { GitHubClient, IssueSummary } from '../github/types.js';
+import type { GitHubClient, IssueState, IssueSummary } from '../github/types.js';
 import { rollupCi } from './ci.js';
+import {
+  finishPage,
+  issueListArgs,
+  pageToFetch,
+  PaginationError,
+  pullListArgs,
+} from './pagination.js';
 import {
   activityOutput,
   createdIssueOutput,
@@ -50,6 +64,8 @@ const INSTRUCTIONS = [
   'Pass owner and repo as separate arguments, not as a URL.',
   'devops://watchlist lists repositories from the GITHUB_REPOS environment variable.',
   'Pull request digests truncate patches. Mention that when patchTruncated or filesTruncated is true.',
+  'list_open_pull_requests and list_issues return one page. When nextCursor is set, pass it back as cursor to read the next page. Do not invent a cursor.',
+  `A page holds at most ${MAX_PAGE_SIZE} items, and following cursors stops at ${MAX_LIST_RESULTS} items.`,
   'Never ask the user to paste a GitHub token or private key into the chat. The server reads GitHub App credentials or GITHUB_TOKEN from its own environment.',
 ].join(' ');
 
@@ -64,18 +80,19 @@ export function createDevOpsServer(options: DevOpsServerOptions): McpServer {
     'list_open_pull_requests',
     {
       title: 'List open pull requests',
-      description:
-        'List open pull requests for one repository and roll up CI. Failure wins over pending, which wins over success. An empty check set is "unknown", not passing. Returns the first page only.',
-      inputSchema: ownerRepoSchema.extend({ limit: limitSchema }),
+      description: `List open pull requests for one repository and roll up CI. Failure wins over pending, which wins over success. An empty check set is "unknown", not passing. Returns one page of at most ${MAX_PAGE_SIZE}. Pass nextCursor back as cursor for the next page. Listing stops at ${MAX_LIST_RESULTS} results.`,
+      inputSchema: pullListArgs,
       outputSchema: pullListOutput,
       annotations: READ_ONLY,
     },
-    async ({ owner, repo, limit }) =>
+    async ({ owner, repo, limit, cursor }) =>
       runTool(async () => {
-        const pageSize = limit ?? 10;
-        const pulls = await options.github.listOpenPullRequests(owner, repo, pageSize);
+        const pageSize = limit ?? DEFAULT_PAGE_SIZE;
+        const query = { kind: 'pulls' as const, owner, repo, state: null, limit: pageSize };
+        const page = pageToFetch(cursor, query);
+        const pulls = await options.github.listOpenPullRequests(owner, repo, pageSize, page);
         let checksDenied = false;
-        const detailed = await mapWithConcurrency(pulls, 4, async (pull) => {
+        const detailed = await mapWithConcurrency(pulls.items, 4, async (pull) => {
           const status = await options.github.getCombinedStatus(owner, repo, pull.headSha);
           let checks: Awaited<ReturnType<GitHubClient['listCheckRuns']>> = [];
           try {
@@ -105,7 +122,15 @@ export function createDevOpsServer(options: DevOpsServerOptions): McpServer {
               'GitHub denied check-run access. Combined commit statuses are included; check runs are not. The credential needs permission to read checks.',
             ]
           : [];
-        const structured: PullListOutput = { owner, repo, pullRequests: detailed, warnings };
+        const pageResult = finishPage({ ...query, hasMore: pulls.hasMore, page });
+        if (pageResult.capWarning) warnings.push(pageResult.capWarning);
+        const structured: PullListOutput = {
+          owner,
+          repo,
+          pullRequests: detailed,
+          warnings,
+          nextCursor: pageResult.nextCursor,
+        };
         return jsonResult(renderPullList(structured), structured);
       }),
   );
@@ -194,27 +219,32 @@ export function createDevOpsServer(options: DevOpsServerOptions): McpServer {
     'list_issues',
     {
       title: 'List issues',
-      description:
-        'List issues for one repository. Pull requests are omitted because GitHub returns them from the issues API. Returns the first page only, so a page that is mostly pull requests can yield fewer issues than the limit.',
-      inputSchema: ownerRepoSchema.extend({
-        state: z
-          .enum(['open', 'closed', 'all'])
-          .optional()
-          .describe('Issue state. Defaults to open.'),
-        limit: limitSchema,
-      }),
+      description: `List issues for one repository. Pull requests are omitted because GitHub returns them from the issues API, so a page can contain fewer issues than the limit. Returns one page of at most ${MAX_PAGE_SIZE}. Pass nextCursor back as cursor for the next page. Listing stops at ${MAX_LIST_RESULTS} results.`,
+      inputSchema: issueListArgs,
       outputSchema: issueListOutput,
       annotations: READ_ONLY,
     },
-    async ({ owner, repo, state, limit }) =>
+    async ({ owner, repo, state, limit, cursor }) =>
       runTool(async () => {
-        const selected = state ?? 'open';
-        const issues = await options.github.listIssues(owner, repo, selected, limit ?? 10);
+        const selected: IssueState = state ?? 'open';
+        const pageSize = limit ?? DEFAULT_PAGE_SIZE;
+        const query = {
+          kind: 'issues' as const,
+          owner,
+          repo,
+          state: selected,
+          limit: pageSize,
+        };
+        const page = pageToFetch(cursor, query);
+        const issues = await options.github.listIssues(owner, repo, selected, pageSize, page);
+        const pageResult = finishPage({ ...query, hasMore: issues.hasMore, page });
         const structured: IssueListOutput = {
           owner,
           repo,
           state: selected,
-          issues: issues.map(toIssueView),
+          issues: issues.items.map(toIssueView),
+          warnings: pageResult.capWarning ? [pageResult.capWarning] : [],
+          nextCursor: pageResult.nextCursor,
         };
         return jsonResult(renderIssues(structured), structured);
       }),
@@ -269,7 +299,7 @@ export function createDevOpsServer(options: DevOpsServerOptions): McpServer {
       runTool(async () => {
         const until = now();
         const start = since ?? new Date(until.getTime() - 24 * 60 * 60 * 1000).toISOString();
-        const pageSize = limit ?? 10;
+        const pageSize = limit ?? DEFAULT_PAGE_SIZE;
         const [commits, recent] = await Promise.all([
           options.github.listCommits(owner, repo, start, pageSize),
           options.github.listRecentIssues(owner, repo, start, pageSize),
@@ -395,6 +425,7 @@ export function createDevOpsServer(options: DevOpsServerOptions): McpServer {
               'Prepare a morning standup for my watched repositories.',
               'Read devops://watchlist, then for each repository call get_repo_activity and list_open_pull_requests.',
               'Write four short sections: what changed, pull requests waiting for review, CI failures, and suggested next actions.',
+              'The first page of pull requests is enough unless the user asks for more. If you continue, pass the cursor from the tool result. Do not invent a cursor.',
               'Use only facts from tool results. Do not invent pull request numbers, SHAs, or CI states.',
               'If a patch or list is truncated, say so.',
               focus ? `Focus on: ${focus}` : 'No extra focus was requested.',
@@ -453,8 +484,9 @@ async function runTool(
   try {
     return await action();
   } catch (error) {
+    const text = error instanceof PaginationError ? error.message : toToolErrorMessage(error);
     return {
-      content: [{ type: 'text', text: toToolErrorMessage(error) }],
+      content: [{ type: 'text', text }],
       isError: true,
     };
   }
@@ -509,7 +541,7 @@ function renderPullList(value: PullListOutput): string {
       lines.push(`  - ${check.name}: ${check.state}`);
     }
   }
-  for (const warning of value.warnings) lines.push(`Warning: ${warning}`);
+  lines.push(...renderPageFooter(value.nextCursor, value.warnings));
   return lines.join('\n');
 }
 
@@ -538,7 +570,20 @@ function renderIssues(value: IssueListOutput): string {
     const labels = issue.labels.length > 0 ? ` [${issue.labels.join(', ')}]` : '';
     lines.push(`#${issue.number} ${issue.title}${labels} — ${issue.url}`);
   }
+  lines.push(...renderPageFooter(value.nextCursor, value.warnings));
   return lines.join('\n');
+}
+
+function renderPageFooter(nextCursor: string | null, warnings: readonly string[]): string[] {
+  const lines: string[] = [];
+  if (nextCursor) {
+    lines.push(
+      'More results. Call this tool again with the same owner, repository, state, and limit, and set cursor to the nextCursor value. Do not invent a cursor.',
+    );
+    lines.push(`nextCursor: ${nextCursor}`);
+  }
+  for (const warning of warnings) lines.push(`Warning: ${warning}`);
+  return lines;
 }
 
 function renderActivity(value: ActivityOutput): string {

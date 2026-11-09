@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
-const githubName = z
+import { MAX_PAGE_SIZE } from '../constants.js';
+
+export const githubName = z
   .string()
   .trim()
   .min(1)
@@ -20,11 +22,9 @@ export const limitSchema = z
   .number()
   .int()
   .min(1)
-  .max(30)
+  .max(MAX_PAGE_SIZE)
   .optional()
-  .describe(
-    'Maximum number of items to return. Defaults to 10. The tool returns the first page only.',
-  );
+  .describe('Maximum number of items in this page. Defaults to 10 and cannot exceed 30.');
 
 export const sinceSchema = z
   .string()
@@ -61,6 +61,12 @@ export const pullListOutput = z.object({
     }),
   ),
   warnings: z.array(z.string()),
+  nextCursor: z
+    .string()
+    .nullable()
+    .describe(
+      'Pass this back as cursor to read the next page. Null when there is no further page.',
+    ),
 });
 
 export const summaryOutput = z.object({
@@ -107,6 +113,13 @@ export const issueListOutput = z.object({
   repo: z.string(),
   state: z.enum(['open', 'closed', 'all']),
   issues: z.array(issueOutput),
+  warnings: z.array(z.string()),
+  nextCursor: z
+    .string()
+    .nullable()
+    .describe(
+      'Pass this back as cursor to read the next page. Null when there is no further page.',
+    ),
 });
 
 export const createdIssueOutput = issueOutput.extend({

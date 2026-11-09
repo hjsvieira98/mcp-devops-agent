@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { boundedPageNumber, boundedPageSize } from '../constants.js';
 import { GitHubApiError, GitHubAppAuthError, GitHubResponseError, scrubSecret } from './errors.js';
 import type {
   CheckRun,
@@ -9,6 +10,7 @@ import type {
   GitHubClient,
   IssueState,
   IssueSummary,
+  ListPage,
   PullRequestFile,
   PullRequestSummary,
   RepositoryInfo,
@@ -128,13 +130,21 @@ export class GitHubRestClient implements GitHubClient {
     this.userAgent = options.userAgent ?? 'devops-mcp';
   }
 
-  listOpenPullRequests(owner: string, repo: string, limit: number): Promise<PullRequestSummary[]> {
-    return this.getList(
+  async listOpenPullRequests(
+    owner: string,
+    repo: string,
+    limit: number,
+    page = 1,
+  ): Promise<ListPage<PullRequestSummary>> {
+    const size = boundedPageSize(limit);
+    const index = boundedPageNumber(page);
+    const { value, hasMore } = await this.getList(
       `/repos/${segment(owner)}/${segment(repo)}/pulls`,
-      { state: 'open', per_page: limit, page: 1 },
+      { state: 'open', per_page: size, page: index },
       z.array(pullSchema),
       (pulls) => pulls.map(toPull),
     );
+    return { items: value.slice(0, size), hasMore };
   }
 
   async getCombinedStatus(owner: string, repo: string, ref: string): Promise<CombinedCommitStatus> {
@@ -174,13 +184,13 @@ export class GitHubRestClient implements GitHubClient {
     return toPull(pull);
   }
 
-  listPullRequestFiles(
+  async listPullRequestFiles(
     owner: string,
     repo: string,
     number: number,
     limit: number,
   ): Promise<PullRequestFile[]> {
-    return this.getList(
+    const { value } = await this.getList(
       `/repos/${segment(owner)}/${segment(repo)}/pulls/${number}/files`,
       { per_page: limit, page: 1 },
       z.array(fileSchema),
@@ -193,6 +203,7 @@ export class GitHubRestClient implements GitHubClient {
           patch: file.patch ?? null,
         })),
     );
+    return value;
   }
 
   async listIssues(
@@ -200,13 +211,24 @@ export class GitHubRestClient implements GitHubClient {
     repo: string,
     state: IssueState,
     limit: number,
-  ): Promise<IssueSummary[]> {
-    const issues = await this.fetchIssues(owner, repo, { state, per_page: limit, page: 1 });
-    return issues.filter((issue) => !issue.isPullRequest).slice(0, limit);
+    page = 1,
+  ): Promise<ListPage<IssueSummary>> {
+    const size = boundedPageSize(limit);
+    const index = boundedPageNumber(page);
+    const { value, hasMore } = await this.getList(
+      `/repos/${segment(owner)}/${segment(repo)}/issues`,
+      { state, per_page: size, page: index },
+      z.array(issueSchema),
+      (issues) => issues.map(toIssue),
+    );
+    return {
+      items: value.filter((issue) => !issue.isPullRequest).slice(0, size),
+      hasMore,
+    };
   }
 
   async createIssue(owner: string, repo: string, input: CreateIssueInput): Promise<IssueSummary> {
-    const issue = await this.send(
+    const { data: issue } = await this.send(
       `/repos/${segment(owner)}/${segment(repo)}/issues`,
       { method: 'POST', body: input },
       issueSchema,
@@ -214,13 +236,13 @@ export class GitHubRestClient implements GitHubClient {
     return toIssue(issue);
   }
 
-  listCommits(
+  async listCommits(
     owner: string,
     repo: string,
     since: string,
     limit: number,
   ): Promise<CommitActivity[]> {
-    return this.getList(
+    const { value } = await this.getList(
       `/repos/${segment(owner)}/${segment(repo)}/commits`,
       { since, per_page: limit, page: 1 },
       z.array(commitSchema),
@@ -233,6 +255,7 @@ export class GitHubRestClient implements GitHubClient {
           url: commit.html_url,
         })),
     );
+    return value;
   }
 
   listRecentIssues(
@@ -257,17 +280,18 @@ export class GitHubRestClient implements GitHubClient {
     };
   }
 
-  private fetchIssues(
+  private async fetchIssues(
     owner: string,
     repo: string,
     query: Record<string, string | number | undefined>,
   ): Promise<IssueSummary[]> {
-    return this.getList(
+    const { value } = await this.getList(
       `/repos/${segment(owner)}/${segment(repo)}/issues`,
       query,
       z.array(issueSchema),
       (issues) => issues.map(toIssue),
     );
+    return value;
   }
 
   private async get<T>(
@@ -275,7 +299,8 @@ export class GitHubRestClient implements GitHubClient {
     schema: z.ZodType<T>,
     query?: Record<string, string | number | undefined>,
   ): Promise<T> {
-    return this.send(path, { query }, schema);
+    const { data } = await this.send(path, { query }, schema);
+    return data;
   }
 
   private async getList<T, R>(
@@ -283,9 +308,9 @@ export class GitHubRestClient implements GitHubClient {
     query: Record<string, string | number | undefined>,
     schema: z.ZodType<T>,
     map: (value: T) => R,
-  ): Promise<R> {
-    const value = await this.get(path, schema, query);
-    return map(value);
+  ): Promise<{ value: R; hasMore: boolean }> {
+    const { data, hasMore } = await this.send(path, { query }, schema);
+    return { value: map(data), hasMore };
   }
 
   private async send<T>(
@@ -296,7 +321,7 @@ export class GitHubRestClient implements GitHubClient {
       body?: unknown;
     },
     schema: z.ZodType<T>,
-  ): Promise<T> {
+  ): Promise<{ data: T; hasMore: boolean }> {
     const url = new URL(this.baseUrl + path);
     for (const [key, value] of Object.entries(init.query ?? {})) {
       if (value !== undefined) url.searchParams.set(key, String(value));
@@ -356,7 +381,7 @@ export class GitHubRestClient implements GitHubClient {
         .join('; ');
       throw new GitHubResponseError(path, this.redact(detail, token));
     }
-    return parsed.data;
+    return { data: parsed.data, hasMore: linkHasNext(response.headers.get('link')) };
   }
 
   private async bearer(): Promise<string> {
@@ -379,6 +404,17 @@ export class GitHubRestClient implements GitHubClient {
 
 function segment(value: string): string {
   return encodeURIComponent(value);
+}
+
+/** GitHub sends one link per rel, for example `<url>; rel="next"`. */
+function linkHasNext(header: string | null): boolean {
+  if (!header) return false;
+  for (const part of header.split(',')) {
+    const rel = /;\s*rel="([^"]*)"/.exec(part);
+    const names = rel?.[1]?.split(/\s+/) ?? [];
+    if (names.includes('next')) return true;
+  }
+  return false;
 }
 
 function toPull(pull: z.infer<typeof pullSchema>): PullRequestSummary {

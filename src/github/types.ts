@@ -75,12 +75,24 @@ export type CreateIssueInput = {
 
 export type IssueState = 'open' | 'closed' | 'all';
 
+/** One page of a list. `hasMore` is true when another page exists after this one. */
+export type ListPage<T> = {
+  items: T[];
+  hasMore: boolean;
+};
+
 /**
  * The only GitHub surface the MCP tools depend on.
  * Production code uses {@link GitHubRestClient}. Evals use an in-memory implementation.
+ * `page` is 1-based. List methods never return more than the page-size cap.
  */
 export interface GitHubClient {
-  listOpenPullRequests(owner: string, repo: string, limit: number): Promise<PullRequestSummary[]>;
+  listOpenPullRequests(
+    owner: string,
+    repo: string,
+    limit: number,
+    page?: number,
+  ): Promise<ListPage<PullRequestSummary>>;
   getCombinedStatus(owner: string, repo: string, ref: string): Promise<CombinedCommitStatus>;
   listCheckRuns(owner: string, repo: string, ref: string): Promise<CheckRun[]>;
   getPullRequest(owner: string, repo: string, number: number): Promise<PullRequestSummary>;
@@ -95,7 +107,8 @@ export interface GitHubClient {
     repo: string,
     state: IssueState,
     limit: number,
-  ): Promise<IssueSummary[]>;
+    page?: number,
+  ): Promise<ListPage<IssueSummary>>;
   createIssue(owner: string, repo: string, input: CreateIssueInput): Promise<IssueSummary>;
   listCommits(owner: string, repo: string, since: string, limit: number): Promise<CommitActivity[]>;
   listRecentIssues(

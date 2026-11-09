@@ -1,3 +1,4 @@
+import { boundedPageNumber, boundedPageSize } from '../constants.js';
 import { GitHubApiError } from './errors.js';
 import type {
   CheckRun,
@@ -8,6 +9,7 @@ import type {
   GitHubClient,
   IssueState,
   IssueSummary,
+  ListPage,
   PullRequestFile,
   PullRequestSummary,
   RepositoryInfo,
@@ -52,10 +54,26 @@ export class MemoryGitHub implements GitHubClient {
     this.nextIssueNumber = world.nextIssueNumber ?? 101;
   }
 
-  listOpenPullRequests(owner: string, repo: string, limit: number): Promise<PullRequestSummary[]> {
-    const record = this.requireRepo('listOpenPullRequests', owner, repo, [owner, repo, limit]);
-    const pulls = (record.pulls ?? []).slice(0, limit).map(stripPull);
-    return Promise.resolve(pulls);
+  listOpenPullRequests(
+    owner: string,
+    repo: string,
+    limit: number,
+    page = 1,
+  ): Promise<ListPage<PullRequestSummary>> {
+    const size = boundedPageSize(limit);
+    const index = boundedPageNumber(page);
+    const record = this.requireRepo('listOpenPullRequests', owner, repo, [
+      owner,
+      repo,
+      size,
+      index,
+    ]);
+    const pulls = record.pulls ?? [];
+    const start = (index - 1) * size;
+    return Promise.resolve({
+      items: pulls.slice(start, start + size).map(stripPull),
+      hasMore: start + size < pulls.length,
+    });
   }
 
   getCombinedStatus(owner: string, repo: string, ref: string): Promise<CombinedCommitStatus> {
@@ -130,13 +148,22 @@ export class MemoryGitHub implements GitHubClient {
     repo: string,
     state: IssueState,
     limit: number,
-  ): Promise<IssueSummary[]> {
-    const record = this.requireRepo('listIssues', owner, repo, [owner, repo, state, limit]);
-    return Promise.resolve(
-      (record.issues ?? [])
-        .filter((issue) => !issue.isPullRequest && (state === 'all' || issue.state === state))
-        .slice(0, limit),
+    page = 1,
+  ): Promise<ListPage<IssueSummary>> {
+    const size = boundedPageSize(limit);
+    const index = boundedPageNumber(page);
+    const record = this.requireRepo('listIssues', owner, repo, [owner, repo, state, size, index]);
+    // Page the GitHub issues payload first, then drop pull requests. A page of pull requests
+    // can therefore return fewer issues than the limit while still having another page.
+    const matching = (record.issues ?? []).filter(
+      (issue) => state === 'all' || issue.state === state,
     );
+    const start = (index - 1) * size;
+    const window = matching.slice(start, start + size);
+    return Promise.resolve({
+      items: window.filter((issue) => !issue.isPullRequest),
+      hasMore: start + size < matching.length,
+    });
   }
 
   createIssue(owner: string, repo: string, input: CreateIssueInput): Promise<IssueSummary> {

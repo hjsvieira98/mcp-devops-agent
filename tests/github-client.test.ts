@@ -37,7 +37,8 @@ describe('GitHubRestClient', () => {
     });
 
     const pulls = await github.listOpenPullRequests('acme', 'web', 5);
-    expect(pulls).toEqual([
+    expect(pulls.hasMore).toBe(false);
+    expect(pulls.items).toEqual([
       {
         number: 7,
         title: 'Ship it',
@@ -53,7 +54,62 @@ describe('GitHubRestClient', () => {
     ]);
     expect(seen.url).toContain('/repos/acme/web/pulls?');
     expect(seen.url).toContain('state=open');
+    expect(seen.url).toContain('per_page=5');
+    expect(seen.url).toContain('page=1');
     expect(seen.authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it('requests a later page and reports a next link', async () => {
+    let seen = '';
+    const github = client(async (input) => {
+      seen = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      return jsonResponse(
+        [
+          {
+            number: 11,
+            title: 'Next page',
+            html_url: 'https://github.com/acme/web/pull/11',
+            user: { login: 'ada' },
+            updated_at: '2026-04-02T00:00:00Z',
+            body: null,
+            head: { ref: 'next', sha: 'def' },
+            base: { ref: 'main' },
+          },
+        ],
+        200,
+        {
+          link: '<https://api.github.test/repos/acme/web/pulls?page=3>; rel="next", <https://api.github.test/repos/acme/web/pulls?page=1>; rel="prev"',
+        },
+      );
+    });
+    const page = await github.listOpenPullRequests('acme', 'web', 10, 2);
+    expect(seen).toContain('page=2');
+    expect(seen).toContain('per_page=10');
+    expect(page.hasMore).toBe(true);
+    expect(page.items.map((pull) => pull.number)).toEqual([11]);
+  });
+
+  it('does not treat a previous link as another page', async () => {
+    const github = client(async () =>
+      jsonResponse([], 200, {
+        link: '<https://api.github.test/repos/acme/web/pulls?page=1>; rel="prev"',
+      }),
+    );
+    const page = await github.listOpenPullRequests('acme', 'web', 10, 2);
+    expect(page.hasMore).toBe(false);
+    expect(page.items).toEqual([]);
+  });
+
+  it('caps the page size and page number sent to GitHub', async () => {
+    let seen = '';
+    const github = client(async (input) => {
+      seen = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      return jsonResponse([]);
+    });
+    const page = await github.listOpenPullRequests('acme', 'web', 500, 400);
+    expect(seen).toContain('per_page=30');
+    expect(seen).toContain('page=100');
+    expect(page.hasMore).toBe(false);
   });
 
   it('omits the token from an error even when GitHub echoes it', async () => {
@@ -176,7 +232,43 @@ describe('GitHubRestClient', () => {
       ]),
     );
     const issues = await github.listIssues('acme', 'web', 'open', 10);
-    expect(issues.map((issue) => issue.number)).toEqual([2]);
-    expect(issues[0]?.author).toBe('ghost');
+    expect(issues.items.map((issue) => issue.number)).toEqual([2]);
+    expect(issues.items[0]?.author).toBe('ghost');
+    expect(issues.hasMore).toBe(false);
+  });
+
+  it('keeps a next page when the issues payload is mostly pull requests', async () => {
+    const github = client(async () =>
+      jsonResponse(
+        [
+          {
+            number: 1,
+            title: 'A pull',
+            html_url: 'https://github.com/acme/web/pull/1',
+            state: 'open',
+            user: { login: 'ada' },
+            updated_at: '2026-04-02T00:00:00Z',
+            body: null,
+            labels: [],
+            pull_request: { url: 'https://api.github.com/repos/acme/web/pulls/1' },
+          },
+          {
+            number: 2,
+            title: 'A bug',
+            html_url: 'https://github.com/acme/web/issues/2',
+            state: 'open',
+            user: { login: 'ada' },
+            updated_at: '2026-04-02T00:00:00Z',
+            body: 'broken',
+            labels: [],
+          },
+        ],
+        200,
+        { link: '<https://api.github.test/repos/acme/web/issues?page=2>; rel="next"' },
+      ),
+    );
+    const issues = await github.listIssues('acme', 'web', 'open', 2);
+    expect(issues.items.map((issue) => issue.number)).toEqual([2]);
+    expect(issues.hasMore).toBe(true);
   });
 });
