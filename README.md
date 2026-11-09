@@ -53,21 +53,21 @@ The CLI reads `devops://watchlist` before the first model turn and puts those re
 
 ## Tools, resources, and prompts
 
-| Name                           | Kind              | Effect                                                                                                                              |
-| ------------------------------ | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `list_open_pull_requests`      | Tool, read        | Open pull requests plus a CI rollup. Failure wins over pending, which wins over success. No checks at all is `unknown`, not a pass. |
-| `summarize_pull_request`       | Tool, read        | Title, author, branches, truncated description, and truncated patches.                                                              |
-| `list_issues`                  | Tool, read        | Issues only. GitHub's issues API also returns pull requests; those are filtered out of the first page.                              |
-| `get_repo_activity`            | Tool, read        | Commits, updated issues, and updated pull requests. Defaults to the last 24 hours.                                                  |
-| `create_issue`                 | Tool, write       | Opens an issue. Not idempotent: calling it twice creates two issues.                                                                |
-| `devops://watchlist`           | Resource          | JSON list of `owner` / `repo` pairs from `GITHUB_REPOS`.                                                                            |
-| `github://repo/{owner}/{repo}` | Resource template | Description, default branch, visibility, and open-issue count. Watched repos are also listed.                                       |
-| `morning_standup`              | Prompt            | Tells the model to read the watchlist, then activity and open pull requests, and to write a standup from those results only.        |
-| `pr_review_brief`              | Prompt            | Tells the model to brief one pull request from `summarize_pull_request`.                                                            |
+| Name                           | Kind              | Effect                                                                                                                                                                                                       |
+| ------------------------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `list_open_pull_requests`      | Tool, read        | Open pull requests plus a CI rollup. Failure wins over pending, which wins over success. No checks at all is `unknown`, not a pass. One page per call. Pass `nextCursor` back as `cursor` for the next page. |
+| `summarize_pull_request`       | Tool, read        | Title, author, branches, truncated description, and truncated patches.                                                                                                                                       |
+| `list_issues`                  | Tool, read        | Issues only. GitHub's issues API also returns pull requests; those are filtered out of each page, so a page can be shorter than the limit. Pass `nextCursor` back as `cursor` for the next page.             |
+| `get_repo_activity`            | Tool, read        | Commits, updated issues, and updated pull requests. Defaults to the last 24 hours.                                                                                                                           |
+| `create_issue`                 | Tool, write       | Opens an issue. Not idempotent: calling it twice creates two issues.                                                                                                                                         |
+| `devops://watchlist`           | Resource          | JSON list of `owner` / `repo` pairs from `GITHUB_REPOS`.                                                                                                                                                     |
+| `github://repo/{owner}/{repo}` | Resource template | Description, default branch, visibility, and open-issue count. Watched repos are also listed.                                                                                                                |
+| `morning_standup`              | Prompt            | Tells the model to read the watchlist, then activity and open pull requests, and to write a standup from those results only.                                                                                 |
+| `pr_review_brief`              | Prompt            | Tells the model to brief one pull request from `summarize_pull_request`.                                                                                                                                     |
 
 Every tool argument is a Zod schema. The MCP SDK turns that schema into the JSON Schema the model sees and rejects a bad call before the handler runs. GitHub responses are parsed with Zod as well, so a shape the client does not understand becomes an error instead of a silent `undefined`. Tool failures are returned as `isError: true` with a message the model can read. Credentials are not tool arguments. A personal access token, an installation token, the App JWT, and the private key are stripped from error text if an upstream body echoes them.
 
-Lists are the first page only, with a cap of 30. Diff text defaults to 8,000 characters and cannot exceed 20,000. That is a context-window limit, not a claim that the digest is a full review.
+`list_open_pull_requests` and `list_issues` return one page. Pass the `nextCursor` from that result back as `cursor`, with the same owner, repository, state, and limit, to read the next page. Each page holds at most 30 items. The default is 10. Following cursors stops at 100 items. Only whole pages are returned, so the total never exceeds 100. When GitHub still has more rows, `nextCursor` is null and the result says the cap was reached. The cursor is opaque. Zod checks its shape and signature, and rejects a malformed or edited cursor before any GitHub call. A cursor is only valid for the server process that issued it. Do not invent one. `get_repo_activity`, commits, and diff files stay on the first page. Diff text defaults to 8,000 characters and cannot exceed 20,000. That is a context-window limit, not a claim that the digest is a full review.
 
 ## Requirements
 
@@ -320,13 +320,14 @@ GitHub Actions runs lint, format, typecheck, tests, evals, and the production bu
 
 The eval scenarios live in [`src/evals/scenarios.ts`](src/evals/scenarios.ts):
 
-| Scenario                 | What it locks in                                                                              |
-| ------------------------ | --------------------------------------------------------------------------------------------- |
-| `morning-standup`        | Activity and open pull requests for each watched repo, and no writes.                         |
-| `pr-digest`              | `summarize_pull_request` for a named pull request, and the filename comes back from the tool. |
-| `create-issue-declined`  | Confirmation denied. The GitHub client never sees `createIssue`.                              |
-| `create-issue-confirmed` | Confirmation allowed. The created issue number is `#101` from the fixture.                    |
-| `step-budget`            | `maxSteps: 2` stops a model that would keep calling `list_issues`.                            |
+| Scenario                 | What it locks in                                                                                                                  |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `morning-standup`        | Activity and open pull requests for each watched repo, and no writes.                                                             |
+| `pr-digest`              | `summarize_pull_request` for a named pull request, and the filename comes back from the tool.                                     |
+| `create-issue-declined`  | Confirmation denied. The GitHub client never sees `createIssue`.                                                                  |
+| `create-issue-confirmed` | Confirmation allowed. The created issue number is `#101` from the fixture.                                                        |
+| `step-budget`            | `maxSteps: 2` stops a model that would keep calling `list_issues`.                                                                |
+| `paginate-issues`        | The second `list_issues` call passes the cursor from the first page. The answer includes an issue that was only on the next page. |
 
 The scripted model is a replay, not a judge. Its final sentence is built from the tool text it was given, so a broken loop that drops tool results fails the scenario. Replacing that replay with a live model, or adding a model-graded rubric, is future work and would need keys.
 
@@ -342,7 +343,7 @@ The scripted model is a replay, not a judge. Its final sentence is built from th
 
 **Writes are gated in the client, not by blocking on stdin inside the server.** The server's stdin is the protocol stream. A confirmation prompt there would corrupt JSON-RPC. The CLI asks the user. Hosts do the equivalent with their own permission UI, using `readOnlyHint`. A tool with no hint is treated as a write. The safe default is to ask.
 
-**Bounded pages and patches.** The first page is a product decision. Following every `Link` header would make a standup call unbounded on a busy repository. The digest says when a patch or a file list was cut short, and the prompts tell the model to pass that on.
+**Bounded pages and patches.** `list_open_pull_requests` and `list_issues` return one page and a `nextCursor` when another page exists. The cursor is opaque. Zod checks its shape and signature, and rejects a cursor that was edited or that this process did not issue. Each page holds at most 30 items. Following cursors stops at 100 items, and only whole pages are returned, so a caller cannot walk a busy repository without bound. The server does not follow every `Link` header on its own. A standup uses the first page unless the caller asks for more. Activity, commits, and diff files stay on the first page. The digest says when a patch or a file list was cut short, and the prompts tell the model to pass that on.
 
 **Credentials stay in the process that needs them.** The server reads either GitHub App credentials or `GITHUB_TOKEN`. The agent forwards those GitHub variables to the child and drops `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`. Tool arguments have no token, private key, or installation id, so the model is not asked to repeat one.
 
@@ -365,7 +366,6 @@ tests/                  Vitest
 
 These are not started. They are the next pieces this design leaves room for.
 
-- A cursor argument so a caller can request the next page of pull requests or issues, still with a hard cap.
 - Reviewers, review state, and a bounded slice of workflow logs for a failed check.
 - MCP OAuth on the HTTP entry, so a shared server does not rely on a token in the environment. The local stdio path would stay as it is.
 - Live-model evals with a frozen fixture set, kept separate from the deterministic tool-call checks above.

@@ -6,7 +6,8 @@ import { formatReport, runScenarios } from '../src/evals/run.js';
 describe('agent eval scenarios', () => {
   it('runs every scripted scenario against the MCP server', async () => {
     const reports = await runScenarios(scenarios);
-    expect(reports.length).toBeGreaterThanOrEqual(4);
+    expect(reports.map((report) => report.id)).toContain('paginate-issues');
+    expect(reports.length).toBeGreaterThanOrEqual(5);
     const failed = reports.filter((report) => !report.passed);
     expect(failed, formatReport(reports)).toEqual([]);
   });

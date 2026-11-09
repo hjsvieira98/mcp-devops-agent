@@ -264,4 +264,55 @@ export const scenarios: EvalScenario[] = [
     answerMustInclude: ['tool-call budget'],
     forbidGitHubCreate: true,
   },
+  {
+    id: 'paginate-issues',
+    title: 'A cursor reads the next page of issues',
+    task: 'List every open issue on acme/web, including the next page.',
+    repositories: [{ owner: 'acme', repo: 'web' }],
+    world: paginationWorld(),
+    now: NOW,
+    plannedCalls: [
+      { name: 'list_issues', arguments: { owner: 'acme', repo: 'web', limit: 10 } },
+      {
+        name: 'list_issues',
+        arguments: { owner: 'acme', repo: 'web', limit: 10, cursor: '$nextCursor' },
+      },
+    ],
+    expectedExecuted: [
+      { name: 'list_issues', arguments: { owner: 'acme', repo: 'web', limit: 10 } },
+      {
+        name: 'list_issues',
+        arguments: { owner: 'acme', repo: 'web', limit: 10, cursor: '$nextCursor' },
+      },
+    ],
+    forbiddenExecuted: ['create_issue'],
+    confirmWrites: false,
+    maxSteps: 8,
+    stoppedReason: 'completed',
+    answerMustInclude: ['Alpha login bug', 'Bravo pagination bug'],
+    forbidGitHubCreate: true,
+  },
 ];
+
+function paginationWorld(): MemoryWorld {
+  const base = world();
+  const repo = base.repositories['acme/web'];
+  if (!repo) return base;
+  repo.issues = Array.from({ length: 15 }, (_, index) => ({
+    number: index + 1,
+    title:
+      index === 0
+        ? 'Alpha login bug'
+        : index === 10
+          ? 'Bravo pagination bug'
+          : `Issue ${index + 1}`,
+    url: `https://github.com/acme/web/issues/${index + 1}`,
+    state: 'open',
+    author: 'ada',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    labels: [],
+    body: null,
+    isPullRequest: false,
+  }));
+  return base;
+}

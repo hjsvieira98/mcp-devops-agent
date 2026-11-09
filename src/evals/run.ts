@@ -124,7 +124,13 @@ function replayModel(scenario: EvalScenario): LanguageModel {
       if (!planned) return Promise.resolve({ content: '', toolCalls: [] });
       return Promise.resolve({
         content: '',
-        toolCalls: [{ id: `call_${index}`, name: planned.name, arguments: planned.arguments }],
+        toolCalls: [
+          {
+            id: `call_${index}`,
+            name: planned.name,
+            arguments: resolveCursorArguments(planned.arguments, toolText),
+          },
+        ],
       });
     },
   };
@@ -146,9 +152,47 @@ function answerFromToolText(scenario: EvalScenario, toolText: string): string {
   return phrases.join('. ');
 }
 
+function resolveCursorArguments(
+  args: Record<string, unknown>,
+  toolText: string,
+): Record<string, unknown> {
+  const cursor = latestCursor(toolText);
+  return Object.fromEntries(
+    Object.entries(args).map(([key, value]) => [
+      key,
+      value === '$nextCursor' ? (cursor ?? 'missing-cursor') : value,
+    ]),
+  );
+}
+
+function latestCursor(toolText: string): string | undefined {
+  const matches = [...toolText.matchAll(/nextCursor: (\S+)/g)];
+  return matches.at(-1)?.[1];
+}
+
 function sameCalls(
   actual: { name: string; arguments: Record<string, unknown> }[],
   expected: { name: string; arguments: Record<string, unknown> }[],
 ): boolean {
-  return JSON.stringify(actual) === JSON.stringify(expected);
+  if (actual.length !== expected.length) return false;
+  return actual.every((call, index) => {
+    const want = expected[index];
+    if (!want || call.name !== want.name) return false;
+    return sameArguments(call.arguments, want.arguments);
+  });
+}
+
+function sameArguments(
+  actual: Record<string, unknown>,
+  expected: Record<string, unknown>,
+): boolean {
+  const actualKeys = Object.keys(actual).sort();
+  const expectedKeys = Object.keys(expected).sort();
+  if (actualKeys.join('\0') !== expectedKeys.join('\0')) return false;
+  return expectedKeys.every((key) => {
+    const want = expected[key];
+    const got = actual[key];
+    if (want === '$nextCursor') return typeof got === 'string' && got.length > 0;
+    return JSON.stringify(got) === JSON.stringify(want);
+  });
 }
